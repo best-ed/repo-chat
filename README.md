@@ -19,14 +19,24 @@ chat endpoint. The UI is a static shell.
 
 ```bash
 npm install
-cp .env.example .env    # fill in DATABASE_URL and the model keys
+cp .env.example .env    # fill in the database URLs and the model keys
 npx prisma migrate deploy
 npm run dev
 ```
 
-`DATABASE_URL` must point at a Postgres that can load the `vector` extension, and
-must be a direct (non-pooled) connection — `prisma/schema.prisma` declares no
-`directUrl`, and pgbouncer breaks `prisma migrate`.
+### Environment
+
+Both database URLs point at the same Postgres, which must be able to load the
+`vector` extension. `DATABASE_URL` is the pooled (pgbouncer) connection the app
+uses at runtime; `DATABASE_DIRECT_URL` is the direct, unpooled one, because
+`prisma migrate` needs session features the pooler strips. Locally, with no
+pooler in front of the database, the two can be the same string.
+
+`ANTHROPIC_API_KEY` covers generation. Embeddings are configured generically —
+`EMBEDDINGS_API_KEY`, `EMBEDDINGS_BASE_URL`, `EMBEDDINGS_MODEL` — because the
+provider is deliberately undecided until the embedding phase. Any embedder works
+as long as it emits **1536-dimension** vectors, which is what the schema is
+committed to.
 
 ## Data model
 
