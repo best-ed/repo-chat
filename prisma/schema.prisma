@@ -1,0 +1,75 @@
+﻿generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector]
+}
+
+enum JobStatus {
+  QUEUED
+  CLONING
+  CHUNKING
+  EMBEDDING
+  READY
+  FAILED
+}
+
+model Repo {
+  id        String    @id @default(cuid())
+  url       String    @unique
+  owner     String
+  name      String
+  commitSha String?
+  fileCount Int       @default(0)
+  byteCount Int       @default(0)
+  chunks    Chunk[]
+  messages  Message[]
+  job       Job?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([owner, name])
+}
+
+model Job {
+  id        String    @id @default(cuid())
+  repo      Repo      @relation(fields: [repoId], references: [id], onDelete: Cascade)
+  repoId    String    @unique
+  status    JobStatus @default(QUEUED)
+  error     String?
+  progress  Int       @default(0)
+  total     Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Chunk {
+  id        String   @id @default(cuid())
+  repo      Repo     @relation(fields: [repoId], references: [id], onDelete: Cascade)
+  repoId    String
+  path      String
+  startLine Int
+  endLine   Int
+  content   String
+  embedding Unsupported("vector(1536)")?
+  createdAt DateTime @default(now())
+
+  @@index([repoId])
+  @@index([repoId, path])
+}
+
+model Message {
+  id        String   @id @default(cuid())
+  repo      Repo     @relation(fields: [repoId], references: [id], onDelete: Cascade)
+  repoId    String
+  role      String
+  content   String
+  citations Json?
+  createdAt DateTime @default(now())
+
+  @@index([repoId, createdAt])
+}
