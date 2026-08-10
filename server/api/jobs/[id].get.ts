@@ -1,17 +1,5 @@
-import { JobStatus } from '@prisma/client'
-
 import { prisma } from '../../utils/prisma'
-
-/**
- * The schema's JobStatus has no member for "cloned, not yet chunked", and the
- * schema is fixed. Rather than parking the job in CHUNKING while nothing chunks,
- * a staged job stays in CLONING with progress === total, and that combination is
- * surfaced here as an explicit stage the client can branch on.
- */
-function stageOf(status: JobStatus, progress: number, total: number): string {
-  if (status === JobStatus.CLONING && total > 0 && progress === total) return 'staged'
-  return status.toLowerCase()
-}
+import { stageOf } from '../../utils/ingest/state'
 
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')

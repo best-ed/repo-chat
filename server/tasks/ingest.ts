@@ -35,6 +35,14 @@ export default defineTask({
         data: { status: JobStatus.CLONING, error: null, progress: 0, total: 0 }
       })
 
+      // Counts must describe this run only. Left alone, a re-ingest that fails
+      // would sit next to totals from an earlier successful run and read as if
+      // those files were still staged.
+      await prisma.repo.update({
+        where: { id: repoId },
+        data: { fileCount: 0, byteCount: 0 }
+      })
+
       const resolved = await resolveRepo(parseRepoUrl(url))
 
       // Record the commit before downloading, so a failure still leaves behind

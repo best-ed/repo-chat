@@ -2,14 +2,7 @@ import { JobStatus } from '@prisma/client'
 
 import { prisma } from '../utils/prisma'
 import { IngestError, parseRepoUrl } from '../utils/ingest/github'
-
-/** Statuses from which a job is still expected to make progress on its own. */
-const ACTIVE_STATUSES: JobStatus[] = [
-  JobStatus.QUEUED,
-  JobStatus.CLONING,
-  JobStatus.CHUNKING,
-  JobStatus.EMBEDDING
-]
+import { isInFlight } from '../utils/ingest/state'
 
 export default defineEventHandler(async (event) => {
   const body = await readBody<{ url?: string }>(event)
@@ -32,8 +25,9 @@ export default defineEventHandler(async (event) => {
   })
 
   // Job.repoId is unique, so a repo has exactly one job for its lifetime.
-  // Re-posting a URL either joins the run in flight or restarts a finished one.
-  if (repo.job && ACTIVE_STATUSES.includes(repo.job.status)) {
+  // Re-posting a URL joins a run that is still in flight, and otherwise restarts
+  // it — including a staged job, which rests in CLONING but is not progressing.
+  if (repo.job && isInFlight(repo.job.status, repo.job.progress, repo.job.total)) {
     return { jobId: repo.job.id, repoId: repo.id, status: repo.job.status, reused: true }
   }
 
