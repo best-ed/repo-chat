@@ -32,6 +32,13 @@ uses at runtime; `DATABASE_DIRECT_URL` is the direct, unpooled one, because
 `prisma migrate` needs session features the pooler strips. Locally, with no
 pooler in front of the database, the two can be the same string.
 
+`GITHUB_TOKEN` is optional but effectively required in practice. Ingestion spends
+three GitHub API calls per repository (metadata, head commit, tarball), and
+unauthenticated access is capped at 60 requests/hour — enough to exhaust in a few
+minutes of testing. A token raises the ceiling to 5000/hour. Without one,
+ingestion still works and fails with an explicit rate-limit message when the
+budget runs out.
+
 `ANTHROPIC_API_KEY` covers generation. Embeddings are configured generically —
 `EMBEDDINGS_API_KEY`, `EMBEDDINGS_BASE_URL`, `EMBEDDINGS_MODEL` — because the
 provider is deliberately undecided until the embedding phase. Any embedder works
