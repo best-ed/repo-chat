@@ -27,7 +27,7 @@ export default defineEventHandler(async (event) => {
   return {
     jobId: job.id,
     status: job.status,
-    stage: stageOf(job.status, job.progress, job.total),
+    stage: stageOf(job.status),
     error: job.error,
     progress: job.progress,
     total: job.total,

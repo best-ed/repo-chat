@@ -26,8 +26,8 @@ export default defineEventHandler(async (event) => {
 
   // Job.repoId is unique, so a repo has exactly one job for its lifetime.
   // Re-posting a URL joins a run that is still in flight, and otherwise restarts
-  // it — including a staged job, which rests in CLONING but is not progressing.
-  if (repo.job && isInFlight(repo.job.status, repo.job.progress, repo.job.total)) {
+  // it — including a STAGED job, which is at rest rather than progressing.
+  if (repo.job && isInFlight(repo.job.status)) {
     return { jobId: repo.job.id, repoId: repo.id, status: repo.job.status, reused: true }
   }
 

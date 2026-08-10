@@ -14,10 +14,10 @@ export interface IngestPayload {
  * Ingestion runs here rather than in the request handler so that POST /api/repos
  * can return a job id immediately instead of blocking on a download.
  *
- * The state machine for this phase is QUEUED -> CLONING -> (staged | FAILED).
- * There is deliberately no advance into CHUNKING: nothing chunks yet, and a job
- * sitting in a status it isn't doing would misreport progress. A staged job is
- * one that is CLONING with progress === total === fileCount.
+ * The state machine for this phase is QUEUED -> CLONING -> STAGED | FAILED.
+ * It deliberately stops at STAGED: nothing chunks yet, and a job sitting in a
+ * status it isn't doing would misreport progress. Phase 3 drives STAGED ->
+ * CHUNKING from here.
  */
 export default defineTask({
   meta: {
@@ -64,11 +64,15 @@ export default defineTask({
         data: { fileCount: staged.fileCount, byteCount: staged.byteCount }
       })
 
-      // Staged: files are on disk under stagingDir and the manifest is in hand.
+      // Files are on disk under stagingDir and the manifest is in hand.
       // Chunking will slot in here, before the finally block reclaims the dir.
       await prisma.job.update({
         where: { id: jobId },
-        data: { progress: staged.fileCount, total: staged.fileCount }
+        data: {
+          status: JobStatus.STAGED,
+          progress: staged.fileCount,
+          total: staged.fileCount
+        }
       })
 
       return { result: 'staged', fileCount: staged.fileCount, byteCount: staged.byteCount }
