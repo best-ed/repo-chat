@@ -13,6 +13,7 @@ datasource db {
 enum JobStatus {
   QUEUED
   CLONING
+  STAGED
   CHUNKING
   EMBEDDING
   READY
