@@ -60,6 +60,12 @@ export async function stageTarball(body: ReadableStream<Uint8Array>, dir: string
   // Kick the download off; the for-await below is what actually drains it.
   const pumped = pipeline(source, createGunzip(), archive)
 
+  // Aborting on a cap breach destroys these streams, which makes `pumped`
+  // reject with ERR_STREAM_PREMATURE_CLOSE after we have already thrown. Attach
+  // a handler up front so that rejection can never surface as an unhandled one
+  // and take the server process down with it.
+  const settled = pumped.catch(() => {})
+
   try {
     for await (const entry of archive) {
       const header = entry.header
@@ -103,9 +109,11 @@ export async function stageTarball(body: ReadableStream<Uint8Array>, dir: string
 
     await pumped
   } catch (error) {
-    // Stop the transfer rather than letting the rest of the archive download.
+    // Stop the transfer rather than letting the rest of the archive download,
+    // then wait for the teardown to finish before propagating.
     source.destroy()
     archive.destroy()
+    await settled
     throw error
   }
 
