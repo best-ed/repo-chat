@@ -7,5 +7,11 @@ export default defineNuxtConfig({
   css: ['~/assets/css/main.css'],
   vite: {
     plugins: [tailwindcss()]
+  },
+  nitro: {
+    experimental: {
+      // Repo ingestion runs as a task so the POST handler never blocks on a clone.
+      tasks: true
+    }
   }
 })
