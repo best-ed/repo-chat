@@ -1,8 +1,55 @@
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
+
 import { JobStatus } from '@prisma/client'
 
 import { prisma } from '../utils/prisma'
 import { IngestError, openTarball, parseRepoUrl, resolveRepo } from '../utils/ingest/github'
-import { createStagingDir, removeStagingDir, stageTarball } from '../utils/ingest/stage'
+import { createStagingDir, removeStagingDir, stageTarball, type StagedRepo } from '../utils/ingest/stage'
+import { createLineWindowSplitter } from '../utils/ingest/splitter'
+
+/** Rows per insert. Keeps a large repo well clear of statement parameter limits. */
+const CHUNK_INSERT_BATCH = 250
+
+/** How often to publish progress while chunking, in files. */
+const PROGRESS_INTERVAL = 25
+
+const splitter = createLineWindowSplitter()
+
+/**
+ * Splits every staged file and writes the chunks. Runs while the staging
+ * directory still exists — the files are only on disk for the life of the task.
+ */
+async function chunkStagedFiles(repoId: string, jobId: string, staged: StagedRepo): Promise<number> {
+  let pending: Array<{ repoId: string, path: string, startLine: number, endLine: number, content: string }> = []
+  let written = 0
+  let filesDone = 0
+
+  const flush = async () => {
+    if (pending.length === 0) return
+    await prisma.chunk.createMany({ data: pending })
+    written += pending.length
+    pending = []
+  }
+
+  for (const file of staged.files) {
+    const content = await readFile(path.join(staged.dir, file.path), 'utf8')
+
+    for (const chunk of splitter.chunk(file.path, content)) {
+      pending.push({ repoId, ...chunk })
+      if (pending.length >= CHUNK_INSERT_BATCH) await flush()
+    }
+
+    filesDone++
+    if (filesDone % PROGRESS_INTERVAL === 0) {
+      await prisma.job.update({ where: { id: jobId }, data: { progress: filesDone } })
+    }
+  }
+
+  await flush()
+  await prisma.job.update({ where: { id: jobId }, data: { progress: filesDone } })
+  return written
+}
 
 export interface IngestPayload {
   jobId: string
@@ -14,10 +61,9 @@ export interface IngestPayload {
  * Ingestion runs here rather than in the request handler so that POST /api/repos
  * can return a job id immediately instead of blocking on a download.
  *
- * The state machine for this phase is QUEUED -> CLONING -> STAGED | FAILED.
- * It deliberately stops at STAGED: nothing chunks yet, and a job sitting in a
- * status it isn't doing would misreport progress. Phase 3 drives STAGED ->
- * CHUNKING from here.
+ * The state machine is QUEUED -> CLONING -> STAGED -> CHUNKING | FAILED, and
+ * rests at CHUNKING. Embedding picks it up from there; until it exists,
+ * CHUNKING is where a finished ingest sits.
  */
 export default defineTask({
   meta: {
@@ -35,13 +81,14 @@ export default defineTask({
         data: { status: JobStatus.CLONING, error: null, progress: 0, total: 0 }
       })
 
-      // Counts must describe this run only. Left alone, a re-ingest that fails
-      // would sit next to totals from an earlier successful run and read as if
-      // those files were still staged.
+      // Counts and chunks must describe this run only. Left alone, a re-ingest
+      // that fails would sit next to totals and chunks from an earlier
+      // successful run and read as if that content were still current.
       await prisma.repo.update({
         where: { id: repoId },
         data: { fileCount: 0, byteCount: 0 }
       })
+      await prisma.chunk.deleteMany({ where: { repoId } })
 
       const resolved = await resolveRepo(parseRepoUrl(url))
 
@@ -65,7 +112,6 @@ export default defineTask({
       })
 
       // Files are on disk under stagingDir and the manifest is in hand.
-      // Chunking will slot in here, before the finally block reclaims the dir.
       await prisma.job.update({
         where: { id: jobId },
         data: {
@@ -75,7 +121,21 @@ export default defineTask({
         }
       })
 
-      return { result: 'staged', fileCount: staged.fileCount, byteCount: staged.byteCount }
+      // Chunking reads from the staging directory, so it has to finish before
+      // the finally block reclaims it.
+      await prisma.job.update({
+        where: { id: jobId },
+        data: { status: JobStatus.CHUNKING, progress: 0, total: staged.fileCount }
+      })
+
+      const chunkCount = await chunkStagedFiles(repoId, jobId, staged)
+
+      return {
+        result: 'chunked',
+        fileCount: staged.fileCount,
+        byteCount: staged.byteCount,
+        chunkCount
+      }
     } catch (error) {
       const message = error instanceof IngestError
         ? error.message
