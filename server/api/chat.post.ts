@@ -53,6 +53,16 @@ export default defineEventHandler(async (event) => {
     })
   }
 
+  // Checked before anything is written or generated. Once response headers are
+  // out, a failure can only appear as an empty body — which reads as a confident
+  // blank answer with citations attached, the worst way to fail.
+  if (!process.env.ANTHROPIC_API_KEY) {
+    throw createError({
+      statusCode: 500,
+      statusMessage: 'ANTHROPIC_API_KEY is not set, so answers cannot be generated.'
+    })
+  }
+
   await prisma.message.create({ data: { repoId, role: 'user', content: question } })
 
   const retrieved = await retrieveChunks(repoId, question)
@@ -72,16 +82,6 @@ export default defineEventHandler(async (event) => {
   }
 
   const citations = citationsFor(relevant)
-
-  // Checked before streaming starts. Once the response headers are out, a
-  // failure can only appear as an empty body — which reads as a confident blank
-  // answer with citations attached, the worst possible way to fail.
-  if (!process.env.ANTHROPIC_API_KEY) {
-    throw createError({
-      statusCode: 500,
-      statusMessage: 'ANTHROPIC_API_KEY is not set, so answers cannot be generated.'
-    })
-  }
 
   const result = streamText({
     model: anthropic(GENERATION_MODEL),
