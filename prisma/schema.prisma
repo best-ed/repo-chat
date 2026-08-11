@@ -57,7 +57,7 @@ model Chunk {
   startLine Int
   endLine   Int
   content   String
-  embedding Unsupported("vector(1536)")?
+  embedding Unsupported("vector(4096)")?
   createdAt DateTime @default(now())
 
   @@index([repoId])
