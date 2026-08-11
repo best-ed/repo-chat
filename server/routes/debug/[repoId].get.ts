@@ -1,5 +1,14 @@
 import { prisma } from '../../utils/prisma'
-import { splitLines } from '../../utils/ingest/splitter'
+
+/**
+ * Chunk content is a join of lines, so it never carries a terminating newline —
+ * every \n in it separates two real lines. `splitLines` must not be used here:
+ * it strips a trailing empty line, which is right for a source file but wrong
+ * for a chunk that legitimately ends on a blank line.
+ */
+function chunkLines(content: string): string[] {
+  return content.split('\n')
+}
 
 /**
  * Inspection gate for chunk quality: every chunk for a repo, grouped by file and
@@ -45,13 +54,13 @@ export default defineEventHandler(async (event) => {
     }
 
     const span = chunk.endLine - chunk.startLine + 1
-    const actual = splitLines(chunk.content).length
+    const actual = chunkLines(chunk.content).length
     // A mismatch here means the range and the content disagree — the exact
     // failure this route exists to make visible.
     const flag = actual === span ? '' : `  <-- MISMATCH: content has ${actual} lines`
     lines.push(`--- ${chunk.path} ${chunk.startLine}-${chunk.endLine} (${span} lines)${flag} ---`)
 
-    const body = splitLines(chunk.content)
+    const body = chunkLines(chunk.content)
     body.forEach((line, i) => lines.push(`${String(chunk.startLine + i).padStart(6)} | ${line}`))
     lines.push('')
   }
