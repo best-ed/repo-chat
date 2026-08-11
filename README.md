@@ -11,9 +11,10 @@ generation · Tailwind CSS · deployed on Vercel.
 
 ## Status
 
-**Phase 1 — scaffolding only.** The app builds and the schema is migrated, but
-nothing is wired up yet: there is no cloning, chunking, embedding, retrieval, or
-chat endpoint. The UI is a static shell.
+**Indexing works end to end; chat does not exist yet.** A repository can be
+ingested — downloaded, chunked, and embedded — with the job state machine
+reporting progress along the way. Retrieval and the chat endpoint are not built,
+and the UI is still a static shell.
 
 ## Setup
 
@@ -39,17 +40,25 @@ minutes of testing. A token raises the ceiling to 5000/hour. Without one,
 ingestion still works and fails with an explicit rate-limit message when the
 budget runs out.
 
-`ANTHROPIC_API_KEY` covers generation. Embeddings are configured generically —
-`EMBEDDINGS_API_KEY`, `EMBEDDINGS_BASE_URL`, `EMBEDDINGS_MODEL` — because the
-provider is deliberately undecided until the embedding phase. Any embedder works
-as long as it emits **1536-dimension** vectors, which is what the schema is
-committed to.
+`ANTHROPIC_API_KEY` covers generation. Embeddings sit behind a config-swappable
+seam — `EMBEDDINGS_API_KEY`, `EMBEDDINGS_BASE_URL`, `EMBEDDINGS_MODEL` — currently
+pointed at NVIDIA's `nv-embedcode-7b-v1`, a code-specialized model on a free
+endpoint. Nothing in the code names a provider, so switching is a config change
+plus a re-embed. Any embedder works as long as it emits **4096-dimension**
+vectors, which is what the schema is committed to.
 
 ## Data model
 
 `prisma/schema.prisma` is the source of truth. Four models: `Repo`, `Job`,
-`Chunk`, and `Message`. Chunk embeddings are `vector(1536)`, held as an
+`Chunk`, and `Message`. Chunk embeddings are `vector(4096)`, held as an
 `Unsupported` column because Prisma has no native vector type — which also means
-the ANN index is declared as raw SQL in
-`prisma/migrations/20260809000100_chunk_embedding_hnsw_index`, an HNSW index using
-`vector_cosine_ops` to match the cosine distance operator retrieval will use.
+vectors are read and written with raw SQL rather than through the generated
+client.
+
+Retrieval uses an exact cosine scan with the `<=>` operator rather than an ANN
+index. pgvector caps HNSW and ivfflat at 2000 dimensions, so no cosine index is
+available at 4096; the earlier HNSW index was dropped when the column widened.
+That is a deliberate trade — code-specialized embeddings over ANN indexability —
+and an exact scan is both correct and fast at this scale, where a repository is
+capped at 500 files and a few thousand chunks. If it ever needs to scale, the
+path is a binary-quantized HNSW index used as a prefilter with an exact rerank.
