@@ -12,7 +12,9 @@
     "db:deploy": "prisma migrate deploy"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.38",
     "@prisma/client": "^6.19.3",
+    "ai": "^7.0.61",
     "nuxt": "^3.21.11",
     "tar-stream": "^3.2.0",
     "vue": "^3.5.40",
