@@ -73,11 +73,28 @@ export default defineEventHandler(async (event) => {
 
   const citations = citationsFor(relevant)
 
+  // Checked before streaming starts. Once the response headers are out, a
+  // failure can only appear as an empty body — which reads as a confident blank
+  // answer with citations attached, the worst possible way to fail.
+  if (!process.env.ANTHROPIC_API_KEY) {
+    throw createError({
+      statusCode: 500,
+      statusMessage: 'ANTHROPIC_API_KEY is not set, so answers cannot be generated.'
+    })
+  }
+
   const result = streamText({
     model: anthropic(GENERATION_MODEL),
     instructions: SYSTEM_INSTRUCTIONS,
     prompt: buildContextPrompt(question, relevant),
+    onError: ({ error }) => {
+      console.error('[chat] generation failed:', error)
+    },
     onEnd: async ({ text }) => {
+      // An empty completion means generation failed mid-stream; persisting it
+      // would leave a blank answer in the transcript carrying real citations.
+      if (!text.trim()) return
+
       await prisma.message.create({
         data: { repoId, role: 'assistant', content: text, citations }
       }).catch(() => {
