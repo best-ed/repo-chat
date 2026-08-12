@@ -1,4 +1,5 @@
 import { JobStatus } from '@prisma/client'
+import { waitUntil } from '@vercel/functions'
 
 import { prisma } from '../utils/prisma'
 import { IngestError, parseRepoUrl } from '../utils/ingest/github'
@@ -42,8 +43,18 @@ export default defineEventHandler(async (event) => {
 
   // Deliberately not awaited: the caller gets a job id now and polls for the
   // rest. The task owns its own error handling and never rejects.
-  runTask('ingest', { payload: { jobId: job.id, repoId: repo.id, url: ref.url } })
-    .catch(() => {})
+  const ingestion = runTask('ingest', {
+    payload: { jobId: job.id, repoId: repo.id, url: ref.url }
+  }).catch(() => {})
+
+  // Without this, a serverless runtime freezes the instance as soon as the
+  // response is sent and the in-flight ingestion dies partway through. Outside a
+  // Vercel request context this is a no-op, so local behaviour is unchanged.
+  //
+  // Ingestion is now bounded by the function's timeout rather than running
+  // unbounded. That is acceptable at the 500-file / 5 MB cap; a larger cap would
+  // need a queue and a worker instead.
+  waitUntil(ingestion)
 
   setResponseStatus(event, 202)
   return { jobId: job.id, repoId: repo.id, status: job.status, reused: false }
