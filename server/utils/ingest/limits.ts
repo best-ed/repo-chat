@@ -3,8 +3,9 @@
  * This is the file to edit when a repo gets skipped for the wrong reason.
  */
 
-export const MAX_FILES = 500
-export const MAX_TOTAL_BYTES = 5 * 1024 * 1024
+// The caps themselves live outside server/ so the UI can state the same numbers
+// it will be judged against.
+export { MAX_FILES, MAX_TOTAL_BYTES } from '../../../utils/repoLimits'
 
 /** Extensions we treat as text worth indexing. Everything else is skipped. */
 export const ALLOWED_EXTENSIONS: ReadonlySet<string> = new Set([

@@ -27,6 +27,9 @@ function sourcesFor(message: ChatMessage) {
   return usedCitations(message.content, message.citations)
 }
 
+/** Distinguishes hitting the size cap from any other ingestion failure. */
+const isOverLimit = computed(() => /exceeds the/i.test(indexError.value ?? ''))
+
 const progressLabel = computed(() => {
   const state = job.value
   if (!state) return null
@@ -66,6 +69,7 @@ const progressLabel = computed(() => {
           >
             {{ isWorking ? 'Indexing…' : 'Index repository' }}
           </button>
+          <p class="text-xs leading-relaxed text-slate-600">{{ LIMITS_SUMMARY }}</p>
         </form>
 
         <div class="flex flex-1 flex-col gap-3 overflow-y-auto rounded-md border border-dashed border-slate-800 p-4">
@@ -89,7 +93,16 @@ const progressLabel = computed(() => {
             </dl>
           </template>
 
-          <p v-if="indexError" class="text-xs text-rose-400">{{ indexError }}</p>
+          <div v-if="indexError" class="flex flex-col gap-1 rounded border border-rose-900 bg-rose-950/40 p-3">
+            <p class="text-xs font-medium text-rose-300">
+              {{ isOverLimit ? 'Repository too large to index' : 'Indexing failed' }}
+            </p>
+            <p class="text-xs leading-relaxed text-rose-200/80">{{ indexError }}</p>
+            <p v-if="isOverLimit" class="text-xs leading-relaxed text-rose-200/60">
+              Nothing was indexed — a repository over the cap is rejected outright rather
+              than partly indexed, so an answer can never be built from half a codebase.
+            </p>
+          </div>
         </div>
       </section>
 
