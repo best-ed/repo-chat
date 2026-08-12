@@ -48,6 +48,47 @@ endpoint. Nothing in the code names a provider, so switching is a config change
 plus a re-embed. Any embedder works as long as it emits **4096-dimension**
 vectors, which is what the schema is committed to.
 
+## Known limitations
+
+**Abstractly-phrased questions get refused even when the answer is in the code.**
+The relevance cutoff is a cosine distance of 0.5. A well-posed question about
+code that exists retrieves around 0.36–0.47, and questions the repository cannot
+answer bottom out around 0.81 — but a vaguely-worded question about code that
+*does* exist can land at ~0.80, indistinguishable from an off-domain one, and is
+refused. That is the intended direction: refusing beats fabricating. It comes
+from quantized embeddings separating poorly across a small repository, so it is
+not a threshold that can simply be loosened without letting unrelated chunks in.
+
+**Retrieval is an exact scan, with no ANN index.** 4096-dimension vectors exceed
+pgvector's HNSW ceiling of 2000, so there is no cosine index to build. The `<=>`
+scan is exact and fast at this scale; a binary-quantized HNSW prefilter with an
+exact rerank is the path if the corpus ever outgrew it.
+
+**The size cap bounds indexable text, not bytes downloaded.** The 500-file /
+5 MB limits count allowlisted text files only. A repository full of large
+binaries can stream a great deal through extraction while staying under both,
+because non-allowlisted entries are skipped without being counted.
+
+**Citations show which chunks an answer used, bounded by what was retrieved.**
+The sources under an answer are the retrieved chunks whose file and line range
+the answer actually references. A reference to anything that was not retrieved is
+discarded rather than displayed, so a citation can never point somewhere the
+model was not given — but citations are matched at chunk granularity, so a source
+covers the chunk containing a claim rather than the exact lines of that claim.
+
+**Each question is answered on its own.** Prior turns are not fed back into the
+prompt, so follow-ups like "what about the other branch?" carry no context.
+
+**Ingestion is bounded by the serverless function timeout.** The job runs inside
+the request's lifetime via `waitUntil`, which keeps it alive after the response is
+sent but not past the platform's ceiling. That is workable at the current cap; a
+larger one would need a queue and a separate worker.
+
+**A repository is a snapshot.** Content is pinned to the commit that was indexed
+and never refreshed — re-index to pick up new commits. Citations link to that
+pinned SHA, so they keep resolving to the lines the answer was built from even
+after the branch moves on.
+
 ## Data model
 
 `prisma/schema.prisma` is the source of truth. Four models: `Repo`, `Job`,
