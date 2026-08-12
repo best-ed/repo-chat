@@ -1,14 +1,15 @@
 import type { IndexedRepo } from './useRepoIndexing'
+import type { Citation } from '../utils/citations'
 
-export interface Citation {
-  path: string
-  startLine: number
-  endLine: number
-}
+export type { Citation }
 
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
+  /**
+   * Every chunk retrieval passed to the model. This is the provenance ceiling,
+   * not the display list — what renders is the subset the answer references.
+   */
   citations: Citation[]
 }
 

@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import type { ChatMessage } from './composables/useRepoChat'
+
 const { url, job, repo, error: indexError, index, isReady, isWorking } = useRepoIndexing()
 const { messages, streaming, error: chatError, ask, reset } = useRepoChat()
 
@@ -14,6 +16,15 @@ async function onAsk() {
   const text = question.value
   question.value = ''
   await ask(repo.value.id, text)
+}
+
+/**
+ * Sources shown under an answer: the retrieved chunks the answer actually
+ * references. Retrieval hands the model more than it uses, and listing all of it
+ * would claim provenance the answer does not have.
+ */
+function sourcesFor(message: ChatMessage) {
+  return usedCitations(message.content, message.citations)
 }
 
 const progressLabel = computed(() => {
@@ -99,8 +110,8 @@ const progressLabel = computed(() => {
               </span>
               <p class="whitespace-pre-wrap text-sm text-slate-200">{{ message.content }}</p>
 
-              <ul v-if="message.citations.length" class="flex flex-wrap gap-2 pt-1">
-                <li v-for="(citation, c) in message.citations" :key="c">
+              <ul v-if="sourcesFor(message).length" class="flex flex-wrap gap-2 pt-1">
+                <li v-for="(citation, c) in sourcesFor(message)" :key="c">
                   <a
                     v-if="repo && citationUrl(repo, citation)"
                     :href="citationUrl(repo, citation)!"
