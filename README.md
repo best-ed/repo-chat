@@ -11,10 +11,11 @@ generation · Tailwind CSS · deployed on Vercel.
 
 ## Status
 
-**Indexing works end to end; chat does not exist yet.** A repository can be
-ingested — downloaded, chunked, and embedded — with the job state machine
-reporting progress along the way. Retrieval and the chat endpoint are not built,
-and the UI is still a static shell.
+**The core loop works end to end.** A repository can be ingested — downloaded,
+chunked, and embedded — and then asked questions: the question is embedded,
+the nearest chunks are retrieved, and Claude answers from those excerpts with
+streamed output and citations linking to the exact lines on GitHub. When nothing
+relevant is retrieved, the answer says so instead of guessing.
 
 ## Setup
 
