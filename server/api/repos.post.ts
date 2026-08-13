@@ -3,7 +3,7 @@ import { waitUntil } from '@vercel/functions'
 
 import { prisma } from '../utils/prisma'
 import { IngestError, parseRepoUrl } from '../utils/ingest/github'
-import { isInFlight } from '../utils/ingest/state'
+import { isInFlight, isStaleIngest } from '../utils/ingest/state'
 import { claimIngestSlot, holdIngestSlot, releaseIngestSlot } from '../utils/ingest/runner'
 
 const BUSY_MESSAGE =
@@ -43,8 +43,23 @@ export default defineEventHandler(async (event) => {
   // Job.repoId is unique, so a repo has exactly one job for its lifetime.
   // Re-posting a URL joins a run that is still in flight, and otherwise restarts
   // it — including a STAGED job, which is at rest rather than progressing.
+  //
+  // A job that stopped progressing long ago is not in flight, whatever its
+  // status says: whatever was running it is gone, and nothing will ever move it
+  // again. Joining it would wedge the URL forever, so it is restarted instead.
+  // This is checked here rather than swept in the background because the wedge
+  // only matters to someone asking for that repository, and this is where they
+  // ask.
   if (repo.job && isInFlight(repo.job.status)) {
-    return { jobId: repo.job.id, repoId: repo.id, status: repo.job.status, reused: true }
+    if (!isStaleIngest(repo.job.updatedAt)) {
+      return { jobId: repo.job.id, repoId: repo.id, status: repo.job.status, reused: true }
+    }
+    // Recovering from a crash leaves no other trace, and a repository quietly
+    // reindexing itself is worth being able to see afterwards.
+    console.warn(
+      `[ingest] reclaiming ${ref.url}: job stuck at ${repo.job.status} since ` +
+      `${repo.job.updatedAt.toISOString()}`
+    )
   }
 
   // Claimed before the job row is touched. An ingest that cannot start must not
