@@ -81,6 +81,15 @@ covers the chunk containing a claim rather than the exact lines of that claim.
 **Each question is answered on its own.** Prior turns are not fed back into the
 prompt, so follow-ups like "what about the other branch?" carry no context.
 
+**A repository can be indexed with a few chunks missing.** The embedding provider
+refuses inputs past a token limit, and dense text — translated documentation,
+long link lists — can exceed it even after a window has been split down. Rather
+than failing the whole repository over one chunk, ingestion skips it and
+continues; a skipped chunk keeps no vector, so it is unsearchable rather than
+wrong. `/debug/<repoId>` reports the count and marks which chunks they are. Past
+five percent of a repository the ingest fails instead, since that means something
+broader is wrong.
+
 **Ingestion is bounded by the serverless function timeout.** The job runs inside
 the request's lifetime via `waitUntil`, which keeps it alive after the response is
 sent but not past the platform's ceiling. That is workable at the current cap; a
