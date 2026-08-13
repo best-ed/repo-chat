@@ -4,6 +4,21 @@ import { waitUntil } from '@vercel/functions'
 import { prisma } from '../utils/prisma'
 import { IngestError, parseRepoUrl } from '../utils/ingest/github'
 import { isInFlight } from '../utils/ingest/state'
+import { claimIngestSlot, holdIngestSlot, releaseIngestSlot } from '../utils/ingest/runner'
+
+const BUSY_MESSAGE =
+  'Another repository is currently being indexed — please try again in a moment.'
+
+/**
+ * Records a job as failed. Used from the fire-and-forget path, where there is no
+ * request left to throw into, so a write that fails has nowhere to go.
+ */
+async function failJob(jobId: string, error: string): Promise<void> {
+  await prisma.job.update({
+    where: { id: jobId },
+    data: { status: JobStatus.FAILED, error }
+  }).catch(() => {})
+}
 
 export default defineEventHandler(async (event) => {
   const body = await readBody<{ url?: string }>(event)
@@ -32,20 +47,53 @@ export default defineEventHandler(async (event) => {
     return { jobId: repo.job.id, repoId: repo.id, status: repo.job.status, reused: true }
   }
 
-  const job = repo.job
-    ? await prisma.job.update({
-        where: { id: repo.job.id },
-        data: { status: JobStatus.QUEUED, error: null, progress: 0, total: 0 }
-      })
-    : await prisma.job.create({
-        data: { repoId: repo.id, status: JobStatus.QUEUED }
-      })
+  // Claimed before the job row is touched. An ingest that cannot start must not
+  // leave anything behind — least of all a repository that was already indexed,
+  // whose job would otherwise be reset to QUEUED and then failed for a collision
+  // that has nothing to do with it.
+  if (!claimIngestSlot()) {
+    throw createError({ statusCode: 409, statusMessage: BUSY_MESSAGE })
+  }
+
+  let job
+  try {
+    job = repo.job
+      ? await prisma.job.update({
+          where: { id: repo.job.id },
+          data: { status: JobStatus.QUEUED, error: null, progress: 0, total: 0 }
+        })
+      : await prisma.job.create({
+          data: { repoId: repo.id, status: JobStatus.QUEUED }
+        })
+  } catch (error) {
+    releaseIngestSlot()
+    throw error
+  }
+
+  const jobId = job.id
 
   // Deliberately not awaited: the caller gets a job id now and polls for the
-  // rest. The task owns its own error handling and never rejects.
-  const ingestion = runTask('ingest', {
-    payload: { jobId: job.id, repoId: repo.id, url: ref.url }
-  }).catch(() => {})
+  // rest. Every way this can end has to leave the job in a terminal state,
+  // because a job nobody is running still reads as in-flight to the poller.
+  const ingestion = holdIngestSlot(
+    runTask('ingest', { payload: { jobId, repoId: repo.id, url: ref.url } })
+      .then(async () => {
+        // The task sets its own terminal status. Finding the job still QUEUED
+        // means the run never reached it — the payload was dropped rather than
+        // executed — and leaving it there is the stranding this guards against.
+        const current = await prisma.job.findUnique({
+          where: { id: jobId },
+          select: { status: true }
+        })
+        if (current?.status === JobStatus.QUEUED) {
+          await failJob(jobId, 'Indexing never started. Please try again.')
+        }
+      })
+      .catch(async (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        await failJob(jobId, `Indexing could not be started: ${message}`)
+      })
+  )
 
   // Without this, a serverless runtime freezes the instance as soon as the
   // response is sent and the in-flight ingestion dies partway through. Outside a
