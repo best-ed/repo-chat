@@ -35,6 +35,19 @@ export default defineEventHandler(async (event) => {
     orderBy: [{ path: 'asc' }, { startLine: 'asc' }]
   })
 
+  // Chunks the embedder refused. Ingestion skips these rather than failing the
+  // whole repository, so they are the difference between what was chunked and
+  // what can actually be found — worth stating outright, not inferring from a
+  // count. Raw SQL: an `Unsupported` column cannot be filtered through the
+  // generated client.
+  const skipped = await prisma.$queryRaw<Array<{ path: string, startLine: number, endLine: number }>>`
+    SELECT path, "startLine", "endLine"
+    FROM "Chunk"
+    WHERE "repoId" = ${repoId} AND embedding IS NULL
+    ORDER BY path ASC, "startLine" ASC
+  `
+  const skippedKeys = new Set(skipped.map((c) => `${c.path}:${c.startLine}`))
+
   const lines: string[] = [
     `repo      ${repo.url}`,
     `commit    ${repo.commitSha ?? '(none)'}`,
@@ -42,8 +55,15 @@ export default defineEventHandler(async (event) => {
     `files     ${repo.fileCount}`,
     `bytes     ${repo.byteCount}`,
     `chunks    ${chunks.length}`,
+    `skipped   ${skipped.length}${skipped.length > 0 ? ' (no embedding — not searchable)' : ''}`,
     ''
   ]
+
+  if (skipped.length > 0) {
+    lines.push('The following chunks could not be embedded and cannot be retrieved:')
+    for (const c of skipped) lines.push(`  ${c.path}:${c.startLine}-${c.endLine}`)
+    lines.push('')
+  }
 
   let currentPath: string | null = null
   for (const chunk of chunks) {
@@ -58,7 +78,8 @@ export default defineEventHandler(async (event) => {
     // A mismatch here means the range and the content disagree — the exact
     // failure this route exists to make visible.
     const flag = actual === span ? '' : `  <-- MISMATCH: content has ${actual} lines`
-    lines.push(`--- ${chunk.path} ${chunk.startLine}-${chunk.endLine} (${span} lines)${flag} ---`)
+    const mark = skippedKeys.has(`${chunk.path}:${chunk.startLine}`) ? '  <-- SKIPPED: no embedding' : ''
+    lines.push(`--- ${chunk.path} ${chunk.startLine}-${chunk.endLine} (${span} lines)${flag}${mark} ---`)
 
     const body = chunkLines(chunk.content)
     body.forEach((line, i) => lines.push(`${String(chunk.startLine + i).padStart(6)} | ${line}`))

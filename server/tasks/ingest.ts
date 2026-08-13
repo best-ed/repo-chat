@@ -19,6 +19,30 @@ const CHUNK_INSERT_BATCH = 250
 /** How often to publish progress while chunking, in files. */
 const PROGRESS_INTERVAL = 25
 
+/**
+ * Share of a repository's chunks that may fail to embed and still reach READY.
+ *
+ * One chunk the provider refuses should cost that chunk, not the repository —
+ * before this, a single failure meant a repo could not be indexed at all. A
+ * broken ingest still has to fail loudly though, so this only covers isolated
+ * failures; past the allowance the job is FAILED as before.
+ *
+ * The floor of one is the point of the whole thing: a strict percentage would
+ * fail a seven-chunk repository over a single bad chunk, which is the bug.
+ */
+const MAX_SKIPPED_FRACTION = 0.05
+
+function skipAllowance(chunkCount: number): number {
+  return Math.max(1, Math.floor(chunkCount * MAX_SKIPPED_FRACTION))
+}
+
+interface SkippedChunk {
+  path: string
+  startLine: number
+  endLine: number
+  reason: string
+}
+
 const splitter = createLineWindowSplitter()
 const embedder = createEmbedder()
 
@@ -49,13 +73,62 @@ async function writeEmbeddings(rows: Array<{ id: string, embedding: number[] }>)
   await prisma.$executeRawUnsafe(sql, ...params)
 }
 
+interface PendingChunk {
+  id: string
+  path: string
+  startLine: number
+  endLine: number
+  content: string
+}
+
+/**
+ * Embeds a batch, halving it on failure until the cause is isolated.
+ *
+ * The provider refuses some requests for reasons a caller cannot predict: an
+ * input too long for the model, and separately a request whose inputs are too
+ * much in aggregate. The aggregate limit does not track any character-based
+ * estimate — a measured pair of chunks estimated at 2062 tokens is refused while
+ * a heavier pair estimated at 2400 succeeds — so no fixed batch budget is
+ * trustworthy. Halving needs no estimate at all: it finds the boundary the
+ * provider actually has, on the content actually being sent.
+ *
+ * Recursion bottoms out at a single chunk. A chunk that fails alone is the one
+ * genuinely at fault, and only that one is skipped — the rest of the batch is
+ * still embedded rather than lost with it.
+ */
+async function embedBatch(
+  batch: PendingChunk[],
+  onSkip: (chunk: PendingChunk, reason: string) => void
+): Promise<number> {
+  if (batch.length === 0) return 0
+
+  try {
+    // One input type per request — never mix passages and queries in a batch.
+    const vectors = await embedder.embed(batch.map((chunk) => chunk.content), 'passage')
+    await writeEmbeddings(batch.map((chunk, i) => ({ id: chunk.id, embedding: vectors[i]! })))
+    return batch.length
+  } catch (error) {
+    if (batch.length === 1) {
+      onSkip(batch[0]!, error instanceof Error ? error.message : String(error))
+      return 0
+    }
+
+    const middle = Math.floor(batch.length / 2)
+    return (await embedBatch(batch.slice(0, middle), onSkip))
+      + (await embedBatch(batch.slice(middle), onSkip))
+  }
+}
+
 /**
  * Embeds every chunk of a repo as a passage and stores the vectors.
  *
  * Chunks are read with explicit columns: selecting the embedding column back
  * through the Prisma client fails to deserialize the pgvector type.
  */
-async function embedRepoChunks(repoId: string, jobId: string): Promise<number> {
+async function embedRepoChunks(
+  repoId: string,
+  jobId: string
+): Promise<{ embedded: number, skipped: SkippedChunk[] }> {
   const chunks = await prisma.chunk.findMany({
     where: { repoId },
     select: { id: true, path: true, startLine: true, endLine: true, content: true },
@@ -68,20 +141,24 @@ async function embedRepoChunks(repoId: string, jobId: string): Promise<number> {
   })
 
   let embedded = 0
+  const skipped: SkippedChunk[] = []
 
-  for (let start = 0; start < chunks.length; start += EMBEDDING_BATCH_SIZE) {
-    const batch = chunks.slice(start, start + EMBEDDING_BATCH_SIZE)
-
-    // One input type per request — never mix passages and queries in a batch.
-    const vectors = await embedder.embed(batch.map((chunk) => chunk.content), 'passage')
-
-    await writeEmbeddings(batch.map((chunk, i) => ({ id: chunk.id, embedding: vectors[i]! })))
-
-    embedded += batch.length
-    await prisma.job.update({ where: { id: jobId }, data: { progress: embedded } })
+  const onSkip = (chunk: PendingChunk, reason: string) => {
+    skipped.push({
+      path: chunk.path,
+      startLine: chunk.startLine,
+      endLine: chunk.endLine,
+      reason
+    })
+    console.warn(`[ingest] skipped ${chunk.path}:${chunk.startLine}-${chunk.endLine} — ${reason}`)
   }
 
-  return embedded
+  for (let start = 0; start < chunks.length; start += EMBEDDING_BATCH_SIZE) {
+    embedded += await embedBatch(chunks.slice(start, start + EMBEDDING_BATCH_SIZE), onSkip)
+    await prisma.job.update({ where: { id: jobId }, data: { progress: embedded + skipped.length } })
+  }
+
+  return { embedded, skipped }
 }
 
 /**
@@ -203,19 +280,31 @@ export default defineTask({
         data: { status: JobStatus.EMBEDDING, progress: 0, total: chunkCount }
       })
 
-      const embeddedCount = await embedRepoChunks(repoId, jobId)
+      const { embedded: embeddedCount, skipped } = await embedRepoChunks(repoId, jobId)
 
-      // READY means every chunk is searchable. A chunk left without a vector is
-      // invisible to retrieval, so reaching READY with one is a silent hole.
-      // Raw SQL because an `Unsupported` column cannot be filtered on through
-      // the generated client.
+      // A chunk without a vector is invisible to retrieval, so the count has to
+      // be checked rather than assumed. Raw SQL because an `Unsupported` column
+      // cannot be filtered on through the generated client.
       const [{ missing }] = await prisma.$queryRaw<Array<{ missing: number }>>`
         SELECT count(*)::int AS missing
         FROM "Chunk"
         WHERE "repoId" = ${repoId} AND embedding IS NULL
       `
+
+      // Isolated failures leave a repository worth searching; widespread ones
+      // mean the ingest is broken and must not be dressed up as usable.
+      const allowance = skipAllowance(chunkCount)
+      if (missing > allowance) {
+        throw new IngestError(
+          `${missing} of ${chunkCount} chunks could not be embedded, more than the ${allowance} allowed.`
+        )
+      }
+
       if (missing > 0) {
-        throw new IngestError(`${missing} of ${chunkCount} chunks were left without an embedding.`)
+        console.warn(
+          `[ingest] ${repoId} ready with ${missing} of ${chunkCount} chunks unsearchable: ` +
+          skipped.map((s) => `${s.path}:${s.startLine}-${s.endLine}`).join(', ')
+        )
       }
 
       await prisma.job.update({
@@ -228,7 +317,9 @@ export default defineTask({
         fileCount: staged.fileCount,
         byteCount: staged.byteCount,
         chunkCount,
-        embeddedCount
+        embeddedCount,
+        skippedCount: missing,
+        skipped
       }
     } catch (error) {
       const message = error instanceof IngestError
