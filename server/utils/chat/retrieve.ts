@@ -7,20 +7,32 @@ export const TOP_K = 8
 /**
  * Cosine distance beyond which a chunk is treated as unrelated to the question.
  *
- * Measured, not guessed. Against an indexed `is-plain-obj`:
+ * Calibrated against 38 questions across four repositories of different shapes
+ * (is-plain-obj, collab-crdt, p-queue, scripts-to-rule-them-all) — see
+ * `scripts/measure-retrieval.mjs`, which reproduces the numbers:
  *
- *   "how does it decide a value is a plain object"  -> 0.3613 (index.js, the answer)
- *   off-domain: Stripe webhooks                      -> 0.8099 nearest
- *   off-domain: Kubernetes staging cluster           -> 0.8260 nearest
+ *   specific questions      nearest distance maxed at 0.7061
+ *   unanswerable questions  nearest distance bottomed at 0.7498
  *
- * A well-posed question about code that exists lands around 0.36-0.47; questions
- * the repo cannot answer bottom out around 0.81. 0.5 sits in that gap.
+ * The two classes separate cleanly, and they separate inside every repository
+ * individually — no unanswerable question landed nearer than any specific one.
+ * 0.72 sits in that gap: it admits all 14 specific questions and none of the 12
+ * unanswerable ones. It is set buffered below the observed 0.7498 floor rather
+ * than at it, because that floor is the minimum of a 12-question sample and the
+ * true off-domain distribution almost certainly has a tail below it. Calibrating
+ * to the exact observed edge is what put the previous value (0.5) a quarter of
+ * the scale too low: it was fitted to a single lucky question on one small repo.
+ *
+ * Abstract questions ("what does this repo do?") straddle the unanswerable
+ * range, so 0.72 refuses most of them. That is the deliberate trade — refusing a
+ * vague question is a mild, honest failure; admitting an off-domain one invites
+ * fabrication, which this tool exists not to do.
  *
  * The scale is specific to this embedding model — re-measure after a provider
  * swap. Note this filters gross irrelevance only: on a small repo a few
  * unrelated chunks still pass, and the prompt is what stops them being cited.
  */
-export const MAX_DISTANCE = 0.5
+export const MAX_DISTANCE = 0.72
 
 export interface RetrievedChunk {
   path: string

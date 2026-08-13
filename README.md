@@ -51,13 +51,15 @@ vectors, which is what the schema is committed to.
 ## Known limitations
 
 **Abstractly-phrased questions get refused even when the answer is in the code.**
-The relevance cutoff is a cosine distance of 0.5. A well-posed question about
-code that exists retrieves around 0.36–0.47, and questions the repository cannot
-answer bottom out around 0.81 — but a vaguely-worded question about code that
-*does* exist can land at ~0.80, indistinguishable from an off-domain one, and is
-refused. That is the intended direction: refusing beats fabricating. It comes
-from quantized embeddings separating poorly across a small repository, so it is
-not a threshold that can simply be loosened without letting unrelated chunks in.
+The relevance cutoff is a cosine distance of 0.72, calibrated across 38 questions
+on four repositories of different shapes. Specific questions about code that
+exists top out at 0.7061 and questions the repository cannot answer bottom out at
+0.7498, so 0.72 admits every specific question and no off-domain one. Vaguely
+worded questions are the gray zone — they straddle the off-domain range, and most
+of them are refused. That is the deliberate trade: refusing a vague question is a
+mild failure, while admitting an off-domain one invites fabrication. Re-run
+`scripts/measure-retrieval.mjs` to reproduce the numbers or re-calibrate after an
+embedding-model change.
 
 **Retrieval is an exact scan, with no ANN index.** 4096-dimension vectors exceed
 pgvector's HNSW ceiling of 2000, so there is no cosine index to build. The `<=>`
